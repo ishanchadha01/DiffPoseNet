@@ -2,8 +2,61 @@ import torch
 from torchvision.models import vgg16
 
 
+def conv3x3(in_planes, out_planes, stride=1):
+    "3x3 convolution with padding"
+    return torch.nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False)
+
+
+def conv_transpose3x3(in_planes, out_planes, stride=1, output_padding=0):
+    "3x3 transpose convolution with padding"
+    return torch.nn.ConvTranspose2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, output_padding=output_padding, bias=False)
+
+
+class ResidualBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = conv3x3(in_channels, out_channels, stride)
+        self.bn1 = torch.nn.BatchNorm2d(out_channels)
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.conv2 = conv3x3(out_channels, out_channels)
+        self.bn2 = torch.nn.BatchNorm2d(out_channels)
+        self.stride = stride
+        self.shortcut = torch.nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = torch.nn.Sequential(
+                torch.nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                torch.nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out += self.shortcut(x)
+        out = self.relu(out)
+        return out
+
+
 class NFlowNet(torch.nn.Module):
-    pass
+    """
+    Encoder - two residual blocks
+    Decoder - two transposed residual blocks
+    """
+    def __init__(self, expansion_factor=2):
+        super().__init__(self)
+        self.in_channels = 64
+        self.encoder = torch.nn.Sequential(
+            ResidualBlock(3, 64),
+            ResidualBlock(64, 64 * expansion_factor)
+        )
+        self.decoder = torch.nn.Sequential(
+            ResidualBlock(64 * expansion_factor, 64 * expansion_factor),
+            ResidualBlock(64 * expansion_factor, 64),
+            conv_transpose3x3(64, 3, stride=2, output_padding=1)  # Output layer to match the original image size
+        )
+
 
 class PoseNet(torch.nn.Module):
     """
