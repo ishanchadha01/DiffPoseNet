@@ -5,6 +5,23 @@ from torch.utils.data import DataLoader
 from dataset import TartanAirDataset, NFlowDataset
 from models import PoseNet, NFlowNet
 
+
+def trans_rot_vel_loss(predicted, true, lambda_weight=0.5):
+    predicted_translation = predicted[:, :3]
+    predicted_rotation = predicted[:, 3:]
+
+    true_translation = true[:, :3]
+    true_rotation = true[:, 3:]
+
+    # Calculate the mean squared error separately
+    loss_translation = torch.nn.MSELoss()(predicted_translation, true_translation)
+    loss_rotation = torch.nn.MSELoss()(predicted_rotation, true_rotation)
+
+    # Combine the losses with the weighting factor
+    loss = loss_translation + lambda_weight * loss_rotation
+    return loss
+
+
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -40,7 +57,7 @@ def main():
     train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
     model = PoseNet()
     model = model.to(device)
-    criterion = torch.nn.MSELoss()
+    criterion = trans_rot_vel_loss
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     for epoch in range(num_epochs):
         model.train()

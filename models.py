@@ -82,9 +82,10 @@ class PoseNet(torch.nn.Module):
                             num_layers=num_lstm_layers,
                             batch_first=True)
         
-        # Fully connected layer to get the pose
-        # Pose has 6 degrees of freedom (x, y, z, roll, pitch, yaw)
-        self.fc_pose = torch.nn.Linear(num_hidden_units, 6)
+        # Update the fully connected layer for translation and rotation predictions
+        # Assuming translational velocity V is 3 elements and rotational velocity Omega is 3 elements
+        self.fc_translation = torch.nn.Linear(num_hidden_units, 3)
+        self.fc_rotation = torch.nn.Linear(num_hidden_units, 3)
 
 
     def forward(self, x):
@@ -104,10 +105,14 @@ class PoseNet(torch.nn.Module):
         # Pass the CNN encoded frames through the LSTM layers
         lstm_out, _ = self.lstm(cnn_encoded)
         
-        # We take the output of the LSTM at the last time step
+        # LSTM output for the last time step
         lstm_out = lstm_out[:, -1, :]
         
-        # Pass the LSTM output through the fully connected layer to get the pose
-        pose = self.fc_pose(lstm_out)
+        # Predict translation and rotation separately
+        V = self.fc_translation(lstm_out)
+        omega = self.fc_rotation(lstm_out)
         
-        return pose
+        # Combine the predictions
+        predicted_pose = torch.cat((V, omega), dim=1)
+        
+        return predicted_pose
