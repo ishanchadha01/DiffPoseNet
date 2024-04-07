@@ -124,9 +124,36 @@ class PoseNet(torch.nn.Module):
         return predicted_pose
     
 
+def chirality_objective(V, omega, G_x, N_x, A, B):
+    """
+    Compute the chirality objective for optimization over sampled pixels.
+
+    Args:
+    - V: Tensor representing the constant translational velocity.
+    - omega: Tensor representing the rotational velocity.
+    - G_x: Matrix representing the direction of the image gradients for all pixels.
+    - N_x: Vector representing the magnitude of the normal flow for all pixels.
+    - A: Tensor representing the matrix involved in the motion flow field projection due to translation.
+    - B: Tensor representing the matrix involved in the motion flow field projection due to rotation.
+
+    Returns:
+    - A tensor representing the value of the objective function R for all pixels.
+    """
+    # Ensure that G_x, Beta, Z_x, V, and Omega have the right shapes for batch matrix operations
+    # G_x is [N,2]
+    # N_x is [N, 1]
+    # A and B are [2, 3]
+    # V and Omega are [3, 1]
+    cost = (G_x @ A @ V) * (N_x - (G_x @ B @ omega))
+    smooth_cost = -F.gelu(cost) # twice differentiable and bias towards positive value, enforcing constraint
+    total_cost = torch.sum(smooth_cost)
+    return total_cost
+
+
+
 class LowerLevelOptimization(Function):
     @staticmethod
-    def forward(ctx, initial_guess, *args):
+    def forward(ctx, V_coarse, omega_coarse, G_x, N_x, A, B, *args):
         # args would contain other parameters needed for the lower-level optimization
         # Use torch.optim.LBFGS or another appropriate torch optimizer here
         
@@ -137,21 +164,15 @@ class LowerLevelOptimization(Function):
                 optimizer.zero_grad()
             
             # Calculate the lower-level objective
-            loss = LowerLevelObjective(initial_guess, *args)
+            loss = chirality_objective(V_coarse, omega_coarse, *args)
             if loss.requires_grad:
                 loss.backward()  # Compute gradients
             return loss
         
-        # Set up the optimizer
-        optimizer = torch.optim.LBFGS([initial_guess], line_search_fn='strong_wolfe')
-
-        # Solve the optimization problem
+        optimizer = torch.optim.LBFGS([V_coarse, omega_coarse], line_search_fn='strong_wolfe')
         optimizer.step(closure)
-        
-        # Save for backward pass
-        ctx.save_for_backward(initial_guess, *args)
-        
-        return initial_guess
+        ctx.save_for_backward(V_coarse, omega_coarse)
+        return V_coarse, omega_coarse # refined pose
 
     @staticmethod
     def backward(ctx, grad_output):
