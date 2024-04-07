@@ -1,4 +1,5 @@
 import torch
+from torch.autograd import Function
 from torchvision.models import vgg16
 
 
@@ -51,11 +52,16 @@ class NFlowNet(torch.nn.Module):
             ResidualBlock(3, 64),
             ResidualBlock(64, 64 * expansion_factor)
         )
+        # Output layer to match the original image size
         self.decoder = torch.nn.Sequential(
             ResidualBlock(64 * expansion_factor, 64 * expansion_factor),
             ResidualBlock(64 * expansion_factor, 64),
-            conv_transpose3x3(64, 3, stride=2, output_padding=1)  # Output layer to match the original image size
+            conv_transpose3x3(64, 3, stride=2, output_padding=1)
         )
+    
+    def forward(self, x):
+        x = self.encoder(x)
+        x = self.decoder(x)
 
 
 class PoseNet(torch.nn.Module):
@@ -116,3 +122,66 @@ class PoseNet(torch.nn.Module):
         predicted_pose = torch.cat((V, omega), dim=1)
         
         return predicted_pose
+    
+
+class LowerLevelOptimization(Function):
+    @staticmethod
+    def forward(ctx, initial_guess, *args):
+        # args would contain other parameters needed for the lower-level optimization
+        # Use torch.optim.LBFGS or another appropriate torch optimizer here
+        
+        # Define the lower-level optimization problem
+        def closure():
+            # Zero out gradients
+            if torch.is_grad_enabled():
+                optimizer.zero_grad()
+            
+            # Calculate the lower-level objective
+            loss = LowerLevelObjective(initial_guess, *args)
+            if loss.requires_grad:
+                loss.backward()  # Compute gradients
+            return loss
+        
+        # Set up the optimizer
+        optimizer = torch.optim.LBFGS([initial_guess], line_search_fn='strong_wolfe')
+
+        # Solve the optimization problem
+        optimizer.step(closure)
+        
+        # Save for backward pass
+        ctx.save_for_backward(initial_guess, *args)
+        
+        return initial_guess
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # Extract saved tensors
+        initial_guess, *args = ctx.saved_tensors
+        
+        # Compute gradient of lower-level solution wrt inputs
+        # This is where implicit differentiation takes place
+        # You may need to use a numerical approach or derive an analytical solution
+        grad_input = compute_gradient_of_solution(initial_guess, *args, grad_output)
+        
+        # Return gradients wrt initial guess and any other arguments that require gradients
+        return (grad_input, *grad_args)
+
+# Define a PyTorch module for the upper-level optimization
+class UpperLevelOptimization(torch.nn.Module):
+    def __init__(self):
+        super(UpperLevelOptimization, self).__init__()
+        # Define network parameters and layers here
+
+    def forward(self, x):
+        # Compute initial guess for the lower-level optimization
+        initial_guess = self.compute_initial_guess(x)
+        
+        # Solve the lower-level optimization
+        lower_level_solution = LowerLevelOptimization.apply(initial_guess, x)
+        
+        # Compute the upper-level objective
+        upper_level_loss = UpperLevelObjective(lower_level_solution, x)
+        
+        return upper_level_loss
+
+# Now, you can set up the training loop for the UpperLevelOptimization module
