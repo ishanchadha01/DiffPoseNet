@@ -1,9 +1,9 @@
 from torch.utils.data import Dataset
 
 
-class NFlowDataset(Dataset):
+class TartanAirDataset(Dataset):
     pass
 
 
-class TartanAirDataset(Dataset):
+class C3VDDataset(Dataset):
     pass

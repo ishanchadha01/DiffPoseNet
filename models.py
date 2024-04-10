@@ -3,7 +3,7 @@ from torch.autograd import Function
 import torch.nn.functional as F
 from torchvision.models import vgg16
 
-from ddn import AbstractDeclarativeNode
+from ddn import AbstractDeclarativeNode, DeclarativeLayer
 
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -128,10 +128,14 @@ class PoseNet(torch.nn.Module):
         return predicted_pose
 
 
+#TODO: batch computation
 class ChiralityNode(AbstractDeclarativeNode):
     """
     Node that solves pose chirality optimization problem
     """
+    def __init__(self):
+        super().__init__(self)
+
     def __init__(self, N_x, G_x, A, B):
         super().__init__(self)
         self.N_x = N_x # Magnitude of the normal flow for all pixels
@@ -186,11 +190,14 @@ class ChiralityNode(AbstractDeclarativeNode):
         optimizer.step(closure)
         return (V_refined, omega_refined), None
 
-
+#TODO batch computation
 class AdaptivePoseNode(AbstractDeclarativeNode):
     """
     Node that solves Adaptive pose optimization problem
     """
+    def __init__(self):
+        super().__init__(self)
+
     def __init__(self, N_x, G_x, A, B):
         super().__init__(self)
         self.N_x = N_x # Magnitude of the normal flow for all pixels
