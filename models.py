@@ -3,6 +3,8 @@ from torch.autograd import Function
 import torch.nn.functional as F
 from torchvision.models import vgg16
 
+from ddn import AbstractDeclarativeNode, DeclarativeLayer
+
 
 def conv3x3(in_planes, out_planes, stride=1):
     "3x3 convolution with padding"
@@ -181,65 +183,6 @@ def adaptive_pose_objective(V_coarse, omega_coarse, V_refined, omega_refined, N_
     cost = N_x - torch.einsum('ni,ni->n', G_x, coarse_error) # [N]
     total_cost = torch.sum(cost)
     return total_cost
-
-
-
-class LowerLevelOptimization(Function):
-    @staticmethod
-    def forward(ctx, V_coarse, omega_coarse, G_x, N_x, A, B, *args):
-        # args would contain other parameters needed for the lower-level optimization
-        # Use torch.optim.LBFGS or another appropriate torch optimizer here
-        
-        # Define the lower-level optimization problem
-        def closure():
-            # Zero out gradients
-            if torch.is_grad_enabled():
-                optimizer.zero_grad()
-            
-            # Calculate the lower-level objective
-            loss = chirality_objective(V_coarse, omega_coarse, *args)
-            if loss.requires_grad:
-                loss.backward()  # Compute gradients
-            return loss
-        
-        optimizer = torch.optim.LBFGS([V_coarse, omega_coarse], line_search_fn='strong_wolfe')
-        optimizer.step(closure)
-        ctx.save_for_backward(V_coarse, omega_coarse)
-        return V_coarse, omega_coarse # refined pose
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        # Extract saved tensors
-        initial_guess, *args = ctx.saved_tensors
-        
-        # Compute gradient of lower-level solution wrt inputs
-        # This is where implicit differentiation takes place
-        # You may need to use a numerical approach or derive an analytical solution
-        grad_input = compute_gradient_of_solution(initial_guess, *args, grad_output)
-        
-        # Return gradients wrt initial guess and any other arguments that require gradients
-        return (grad_input, *grad_args)
-
-# Define a PyTorch module for the upper-level optimization
-class UpperLevelOptimization(torch.nn.Module):
-    def __init__(self):
-        super().__init__(self)
-        # Define network parameters and layers here
-
-    def forward(self, x):
-        # Compute initial guess for the lower-level optimization
-        initial_guess = self.compute_initial_guess(x)
-        
-        # Solve the lower-level optimization
-        lower_level_solution = LowerLevelOptimization.apply(initial_guess, x)
-        
-        # Compute the upper-level objective
-        upper_level_loss = UpperLevelObjective(lower_level_solution, x)
-        
-        return upper_level_loss
-
-
-from ddn import AbstractDeclarativeNode, DeclarativeLayer
 
 
 class ChiralityNode(AbstractDeclarativeNode):

@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from dataset import TartanAirDataset, NFlowDataset
-from models import PoseNet, NFlowNet, chirality_objective
+from models import PoseNet, NFlowNet, AdaptivePoseOptimizationLayer, chirality_objective
 
 
 def trans_rot_vel_loss(predicted, true, lambda_weight=0.5):
