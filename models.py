@@ -223,7 +223,7 @@ class LowerLevelOptimization(Function):
 # Define a PyTorch module for the upper-level optimization
 class UpperLevelOptimization(torch.nn.Module):
     def __init__(self):
-        super(UpperLevelOptimization, self).__init__()
+        super().__init__(self)
         # Define network parameters and layers here
 
     def forward(self, x):
@@ -238,4 +238,133 @@ class UpperLevelOptimization(torch.nn.Module):
         
         return upper_level_loss
 
-# Now, you can set up the training loop for the UpperLevelOptimization module
+
+from ddn import AbstractDeclarativeNode, DeclarativeLayer
+
+
+class ChiralityNode(AbstractDeclarativeNode):
+    """
+    Node that solves pose chirality optimization problem
+    """
+    def __init__(self, N_x, G_x, A, B):
+        super().__init__(self)
+        self.N_x = N_x # Magnitude of the normal flow for all pixels
+        self.G_x = G_x # The image gradients for all pixels
+        self.A = A # Matrix for the motion flow field due to translation
+        self.B = B # Matrix for the motion flow field due to rotation
+        #TODO: adjust eps based on convergence
+
+    def objective(self, *xs, y):
+        """
+        Compute the chirality objective for optimization over sampled pixels.
+
+        Args:
+        - V: Tensor representing the constant translational velocity.
+        - omega: Tensor representing the rotational velocity.
+        - G_x: Matrix representing the direction of the image gradients for all pixels.
+        - N_x: Vector representing the magnitude of the normal flow for all pixels.
+        - A: Tensor representing the matrix involved in the motion flow field projection due to translation.
+        - B: Tensor representing the matrix involved in the motion flow field projection due to rotation.
+
+        Returns:
+        - A tensor representing the value of the objective function R for all pixels.
+        """
+        # Ensure that G_x, Beta, Z_x, V, and Omega have the right shapes for batch matrix operations
+        # G_x is [N, 2]
+        # N_x is [N, 1]
+        # A and B are [2, 3]
+        # V and Omega are [N,3]
+        V, omega = xs
+        N = V.shape[0]
+        A_n = self.A.repeat(N,1,1) # [N,2,3]
+        B_n = self.B.repeat(N,1,1) # [N,2,3]
+        cost = torch.einsum('nij,njk,nk->n', self.G_x, A_n, V) * (self.N_x - torch.einsum('nij,njk,nk->n', self.G_x, B_n, omega)) # [N,1]
+        smooth_cost = -F.gelu(cost) # twice differentiable and bias towards positive value, enforcing constraint
+        total_cost = torch.sum(smooth_cost)
+        return total_cost
+    
+    def solve(self, *xs):
+        V_refined, omega_refined = xs
+        optimizer = torch.optim.LBFGS([V_refined, omega_refined], lr=1, max_iter=20, line_search_fn='strong_wolfe')
+
+        def closure():
+            if torch.is_grad_enabled():
+                optimizer.zero_grad() # Zero out gradients
+
+            loss = self.objective((V_refined, omega_refined))
+
+            if loss.requires_grad: #TODO: is this necessary?
+                loss.backward()
+            return loss
+
+        optimizer.step(closure)
+        return (V_refined, omega_refined), None
+
+
+class AdaptivePoseNode(AbstractDeclarativeNode):
+    """
+    Node that solves Adaptive pose optimization problem
+    """
+    def __init__(self, N_x, G_x, A, B):
+        super().__init__(self)
+        self.N_x = N_x # Magnitude of the normal flow for all pixels
+        self.G_x = G_x # The image gradients for all pixels
+        self.A = A # Matrix for the motion flow field due to translation
+        self.B = B # Matrix for the motion flow field due to rotation
+        self.chirality_node = ChiralityNode()
+        #TODO: adjust eps based on convergence
+
+    def objective(self, *xs, y):
+        """
+        Compute the upper-level global objective function for optimization.
+        
+        Args:
+        - V_coarse: Global translational velocity vector.
+        - omega_coarse: Global rotational velocity vector.
+        - V_refined: Refined translational velocity vector.
+        - omega_refined: Refined rotational velocity vector.
+        - G_x: Image gradient direction for all pixels/keypoints.
+        - A: Global matrix A_tilde from the equation.
+        - B: Global matrix B_tilde from the equation.
+
+        Returns:
+        - The value of the upper-level global objective function.
+        """
+        # Compute n_x - g_x' * B_tilde * Omega_tilde globally
+        # Note: g_x, B_tilde, and A_tilde should be formulated to handle the entire image or set of keypoints
+        V_refined, omega_refined, V_coarse_init, omega_coarse_init = xs # inputs
+        N = V_coarse_init.shape[0]
+        A_n = self.A.repeat(N,1,1) # [N,2,3]
+        B_n = self.B.repeat(N,1,1) # [N,2,3]
+        numerator = self.N_x - torch.einsum('nij,njk,nk->n', self.G_x, B_n, omega_refined)
+        denominator = torch.einsum('nij,njk,nk->n', self.G_x, A_n, V_refined) # [N]
+        coarse_error = torch.einsum('n,nij,nj->ni', numerator/denominator, A_n, V_coarse_init) - torch.einsum('nij,nj->ni', B_n, omega_coarse_init) # [N,2]
+        cost = self.N_x - torch.einsum('ni,ni->n', self.G_x, coarse_error) # [N]
+        total_cost = torch.sum(cost) # TODO might need to take the average, but does it matter? only difference is that it'll take longer to converge
+        return total_cost
+    
+    def solve(self, *xs):
+        V_coarse, omega_coarse = xs
+        optimizer = torch.optim.LBFGS([V_coarse, omega_coarse], lr=1, max_iter=20, line_search_fn='strong_wolfe')
+
+        def closure():
+            if torch.is_grad_enabled():
+                optimizer.zero_grad() # Zero out gradients
+
+            V_refined, omega_refined = self.chirality_node.solve((V_coarse, omega_coarse))
+            loss = self.objective((V_coarse, omega_coarse, V_refined, omega_refined))
+
+            if loss.requires_grad: #TODO: is this necessary?
+                loss.backward()
+            return loss
+
+        optimizer.step(closure)
+        return (V_coarse, omega_coarse), None
+
+
+class AdaptivePoseOptimizationLayer(DeclarativeLayer):
+    """
+    PyTorch Module for solving Adaptive Pose optimization problem
+    """
+    def __init__(self):
+        super().__init__(self, AdaptivePoseNode())
