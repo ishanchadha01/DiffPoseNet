@@ -3,7 +3,7 @@ from torch.autograd import Function
 import torch.nn.functional as F
 from torchvision.models import vgg16
 
-from ddn import AbstractDeclarativeNode, DeclarativeLayer
+from ddn import AbstractDeclarativeNode
 
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -65,6 +65,7 @@ class NFlowNet(torch.nn.Module):
     def forward(self, x):
         x = self.encoder(x)
         x = self.decoder(x)
+        return x
 
 
 class PoseNet(torch.nn.Module):
@@ -125,64 +126,6 @@ class PoseNet(torch.nn.Module):
         predicted_pose = torch.cat((V, omega), dim=1)
         
         return predicted_pose
-    
-
-def chirality_objective(V, omega, G_x, N_x, A, B):
-    """
-    Compute the chirality objective for optimization over sampled pixels.
-
-    Args:
-    - V: Tensor representing the constant translational velocity.
-    - omega: Tensor representing the rotational velocity.
-    - G_x: Matrix representing the direction of the image gradients for all pixels.
-    - N_x: Vector representing the magnitude of the normal flow for all pixels.
-    - A: Tensor representing the matrix involved in the motion flow field projection due to translation.
-    - B: Tensor representing the matrix involved in the motion flow field projection due to rotation.
-
-    Returns:
-    - A tensor representing the value of the objective function R for all pixels.
-    """
-    # Ensure that G_x, Beta, Z_x, V, and Omega have the right shapes for batch matrix operations
-    # G_x is [N, 2]
-    # N_x is [N, 1]
-    # A and B are [2, 3]
-    # V and Omega are [N,3]
-    N = V.shape[0]
-    A_n = A.repeat(N,1,1) # [N,2,3]
-    B_n = B.repeat(N,1,1) # [N,2,3]
-    cost = torch.einsum('nij,njk,nk->n',G_x,A_n,V) * (N_x - torch.einsum('nij,njk,nk->n',G_x,B_n,omega)) # [N,1]
-    smooth_cost = -F.gelu(cost) # twice differentiable and bias towards positive value, enforcing constraint
-    total_cost = torch.sum(smooth_cost)
-    return total_cost
-
-
-def adaptive_pose_objective(V_coarse, omega_coarse, V_refined, omega_refined, N_x, G_x, A, B):
-    """
-    Compute the upper-level global objective function for optimization.
-    
-    Args:
-    - V_coarse: Global translational velocity vector.
-    - omega_coarse: Global rotational velocity vector.
-    - V_refined: Refined translational velocity vector.
-    - omega_refined: Refined rotational velocity vector.
-    - G_x: Image gradient direction for all pixels/keypoints.
-    - A: Global matrix A_tilde from the equation.
-    - B: Global matrix B_tilde from the equation.
-
-    Returns:
-    - The value of the upper-level global objective function.
-    """
-    # Compute n_x - g_x' * B_tilde * Omega_tilde globally
-    # Note: g_x, B_tilde, and A_tilde should be formulated to handle the entire image or set of keypoints
-    N = V_coarse.shape[0]
-    A_n = A.repeat(N,1,1) # [N,2,3]
-    B_n = B.repeat(N,1,1) # [N,2,3]
-    numerator = N_x - torch.einsum('nij,njk,nk->n',G_x,B_n,omega_refined)
-    denominator = torch.einsum('nij,njk,nk->n',G_x,A_n,V_refined) # [N]
-    coarse_error = torch.einsum('n,nij,nj->ni',numerator/denominator,A_n,V_coarse) - torch.einsum('nij,nj->ni',B_n,omega_coarse) # [N,2]
-    cost = N_x - torch.einsum('ni,ni->n', G_x, coarse_error) # [N]
-    total_cost = torch.sum(cost)
-    return total_cost
 
 
 class ChiralityNode(AbstractDeclarativeNode):
@@ -304,10 +247,3 @@ class AdaptivePoseNode(AbstractDeclarativeNode):
         optimizer.step(closure)
         return (V_coarse, omega_coarse), None
 
-
-class AdaptivePoseOptimizationLayer(DeclarativeLayer):
-    """
-    PyTorch Module for solving Adaptive Pose optimization problem
-    """
-    def __init__(self):
-        super().__init__(self, AdaptivePoseNode())
