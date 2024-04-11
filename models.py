@@ -87,7 +87,7 @@ class PoseNet(torch.nn.Module):
         # Size of the output tensor from VGG-16 before the LSTM layers
         # This will depend on the size of your input images
         # 512 channels in final VGG-16 output
-        cnn_output_size = 512 * H/32 * W/32
+        cnn_output_size = 512 * int(H/32) * int(W/32)
         
         # Define the recurrent layers
         self.lstm = torch.nn.LSTM(input_size=cnn_output_size, 

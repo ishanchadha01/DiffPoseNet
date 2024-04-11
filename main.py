@@ -202,7 +202,7 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
     return pose_net
 
 
-def train(train_flow=True, train_pose=True, refine_pose=True):
+def train(train_flow=False, train_pose=True, refine_pose=True):
     # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     device = torch.device('cpu')
 
