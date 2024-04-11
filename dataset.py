@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 import cv2
+from tqdm import tqdm
 
 import os
 import math
@@ -71,32 +72,36 @@ def quaternion_difference(q1, q2):
 
 class TartanAirDataset(Dataset):
     def __init__(self):
-        self.data_path = None
+        super().__init__()
+        self.data_path = "/storage/home/hcoda1/3/ichadha3/scratch/data/abandonedfactory/Hard/abandonedfactory/Hard/P000/"
         self.img_path = os.path.join(self.data_path, 'image_left')
         self.flow_path = os.path.join(self.data_path, 'flow')
         self.pose_file = os.path.join(self.data_path, 'pose_left.txt')
         self.focal = 320.0
 
         # Get image pairs
+        print("Loading dataset images")
         self.image_pairs = []
         self.flows = []
         img_files = sorted(os.listdir(self.img_path))
-        for img1, img2 in zip(img_files[:-1], img_files[1:]):
-            img_data1 = cv2.imread(os.path.join(self.img_path, img1))
-            img_data2 = cv2.imread(os.path.join(self.img_path, img2))
-            self.image_pairs.append([img_data1, img_data2])
+        for img1, img2 in tqdm(zip(img_files[:-1], img_files[1:])):
+            img_data1 = torch.tensor(cv2.imread(os.path.join(self.img_path, img1)), dtype=torch.float32).permute(2,0,1) # put channels first
+            img_data2 = torch.tensor(cv2.imread(os.path.join(self.img_path, img2)), dtype=torch.float32).permute(2,0,1)
+            self.image_pairs.append(torch.stack([img_data1, img_data2]))
         
         # Get flows
-        for img in sorted(os.listdir(self.flow_path)):
-            flow_data = cv2.imread(os.path.join(self.flow_path, img))
-            self.flows.append(flow_data)
-        self.flows = sorted(self.flows)
+        print("Loading dataset flows")
+        for img in tqdm(sorted(os.listdir(self.flow_path))):
+            flow_data = np.load(os.path.join(self.flow_path, img))
+            flow_data = np.linalg.norm(flow_data, axis=-1) # only get magnitudes
+            self.flows.append(torch.tensor(flow_data))
 
         # Get poses
+        print("Loading dataset poses")
         self.poses = []
         f = open(self.pose_file, 'r')
         lines = f.readlines()
-        for pose1, pose2 in zip(lines[:-1], lines[1:]):
+        for pose1, pose2 in tqdm(zip(lines[:-1], lines[1:])):
             nums1 = [float(num) for num in pose1.split(' ')]
             nums2 = [float(num) for num in pose2.split(' ')]
             q1 = torch.tensor(nums1[3:])
@@ -104,7 +109,7 @@ class TartanAirDataset(Dataset):
             q_diff = quaternion_difference(q1, q2)
             euler_rot = quaternion_to_euler(q_diff)
             trans_diff = torch.tensor(nums2[:3]) - torch.tensor(nums1[:3])
-            self.poses.append(torch.cat((trans_diff, euler_rot), dim=1))
+            self.poses.append(torch.cat((trans_diff, euler_rot), dim=0))
         f.close()
 
 

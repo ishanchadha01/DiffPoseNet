@@ -49,22 +49,25 @@ class NFlowNet(torch.nn.Module):
     Decoder - two transposed residual blocks
     """
     def __init__(self, expansion_factor=2):
-        super().__init__(self)
+        super().__init__()
         self.in_channels = 64
         self.encoder = torch.nn.Sequential(
-            ResidualBlock(3, 64),
+            ResidualBlock(3*2, 64), # 6 channels to handle both images
             ResidualBlock(64, 64 * expansion_factor)
         )
         # Output layer to match the original image size
         self.decoder = torch.nn.Sequential(
             ResidualBlock(64 * expansion_factor, 64 * expansion_factor),
             ResidualBlock(64 * expansion_factor, 64),
-            conv_transpose3x3(64, 3, stride=2, output_padding=1)
+            conv_transpose3x3(64, 1, stride=2, output_padding=1)
         )
     
-    def forward(self, x):
+    def forward(self, img1, img2):
+        x = torch.cat((img1, img2), dim=1) # along first non-batchsize dim to have 6 channels
         x = self.encoder(x)
         x = self.decoder(x)
+        x = F.interpolate(x, size=(img1.shape[-2], img1.shape[-1]), mode='bilinear', align_corners=False)
+        x = x.squeeze(1)
         return x
 
 
@@ -73,8 +76,8 @@ class PoseNet(torch.nn.Module):
     One CNN stage, then 2 LSTM stages
     Trained on Tartain Air for 30 epochs
     """
-    def __init__(self, H, W, num_hidden_units=250, num_lstm_layers=2):
-        super().__init__(self)
+    def __init__(self, H=480, W=640, num_hidden_units=250, num_lstm_layers=2):
+        super().__init__()
         self.cnn = vgg16(pretrained=True).features
         
         # Freeze VGG parameters to avoid training them
@@ -134,10 +137,10 @@ class ChiralityNode(AbstractDeclarativeNode):
     Node that solves pose chirality optimization problem
     """
     def __init__(self):
-        super().__init__(self)
+        super().__init__()
 
     def __init__(self, N_x, G_x, A, B):
-        super().__init__(self)
+        super().__init__()
         self.N_x = N_x # Magnitude of the normal flow for all pixels
         self.G_x = G_x # The image gradients for all pixels
         self.A = A # Matrix for the motion flow field due to translation
@@ -193,10 +196,10 @@ class AdaptivePoseNode(AbstractDeclarativeNode):
     Node that solves Adaptive pose optimization problem
     """
     def __init__(self):
-        super().__init__(self)
+        super().__init__()
 
     def __init__(self, N_x, G_x, A, B):
-        super().__init__(self)
+        super().__init__()
         self.N_x = N_x # Magnitude of the normal flow for all pixels
         self.G_x = G_x # The image gradients for all pixels
         self.A = A # Matrix for the motion flow field due to translation
