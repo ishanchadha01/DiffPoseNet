@@ -165,12 +165,9 @@ class ChiralityNode(AbstractDeclarativeNode):
         # A and B are [2, 3]
         # V and Omega are [N,3]
         V, omega = xs
-        N = V.shape[0]
-        A_n = self.A.repeat(N,1,1) # [N,2,3]
-        B_n = self.B.repeat(N,1,1) # [N,2,3]
-        cost = torch.einsum('nij,njk,nk->n', self.G_x, A_n, V) * (self.N_x - torch.einsum('nij,njk,nk->n', self.G_x, B_n, omega)) # [N,1]
+        cost = torch.einsum('bchwi,bchwij,bchwj->bchw', self.G_x, self.A, V) * (self.N_x - torch.einsum('bchwi,bchwij,bchwj->bchw', self.G_x, self.B, omega)) # [N,1]
         smooth_cost = -F.gelu(cost) # twice differentiable and bias towards positive value, enforcing constraint
-        total_cost = torch.sum(smooth_cost)
+        total_cost = torch.sum(smooth_cost) #TODO: maybe take expected value?
         return total_cost
     
     def solve(self, *xs):
@@ -226,13 +223,10 @@ class AdaptivePoseNode(AbstractDeclarativeNode):
         # Compute n_x - g_x' * B_tilde * Omega_tilde globally
         # Note: g_x, B_tilde, and A_tilde should be formulated to handle the entire image or set of keypoints
         V_refined, omega_refined, V_coarse_init, omega_coarse_init = xs # inputs
-        N = V_coarse_init.shape[0]
-        A_n = self.A.repeat(N,1,1) # [N,2,3]
-        B_n = self.B.repeat(N,1,1) # [N,2,3]
-        numerator = self.N_x - torch.einsum('nij,njk,nk->n', self.G_x, B_n, omega_refined)
-        denominator = torch.einsum('nij,njk,nk->n', self.G_x, A_n, V_refined) # [N]
-        coarse_error = torch.einsum('n,nij,nj->ni', numerator/denominator, A_n, V_coarse_init) - torch.einsum('nij,nj->ni', B_n, omega_coarse_init) # [N,2]
-        cost = self.N_x - torch.einsum('ni,ni->n', self.G_x, coarse_error) # [N]
+        numerator = self.N_x - torch.einsum('bchwi,bchwij,bj->bchw', self.G_x, self.B, omega_refined) # bchw bc N_x is bchw and is subtracted from
+        denominator = torch.einsum('bchwi,bchwij,bj->bchw', self.G_x, self.A, V_refined) # bchw
+        coarse_error = torch.einsum('bchw,bchwij,bj->bchwi', numerator/denominator, self.A, V_coarse_init) - torch.einsum('bchwij,bj->bchwi', self.B, omega_coarse_init) # [N,2]
+        cost = self.N_x - torch.einsum('bchwi,bchwi->bchw', self.G_x, coarse_error) # [N]
         total_cost = torch.sum(cost) # TODO might need to take the average, but does it matter? only difference is that it'll take longer to converge
         return total_cost
     

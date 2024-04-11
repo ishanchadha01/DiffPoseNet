@@ -7,6 +7,76 @@ from ddn import DeclarativeLayer
 from models import PoseNet, NFlowNet, AdaptivePoseNode, ChiralityNode
 
 
+import torch
+import torch.nn.functional as F
+
+
+def compute_A_B_matrices(batch_size, channels, height, width, f):
+    # Create a meshgrid of x and y coordinates
+    y, x = torch.meshgrid(torch.arange(height), torch.arange(width))
+    
+    # Normalize x and y coordinates to be centered and in camera coordinates
+    x = x.float() - width // 2
+    y = y.float() - height // 2
+
+    # Reshape the grid so that it matches the BCHW format
+    x_grid = x.view(1, 1, height, width).repeat(batch_size, channels, 1, 1)
+    y_grid = y.view(1, 1, height, width).repeat(batch_size, channels, 1, 1)
+    
+    # Compute matrices A and B for each pixel
+    A = torch.stack((-f * torch.ones_like(x_grid), 
+                     torch.zeros_like(x_grid), 
+                     x_grid,
+                     torch.zeros_like(x_grid),
+                     -f * torch.zeros_like(y_grid), 
+                     y_grid,
+                     torch.zeros_like(x_grid), 
+                     torch.zeros_like(x_grid), 
+                     torch.ones_like(x_grid)), dim=-1).reshape(batch_size, channels, height, width, 3, 3)
+
+    B = torch.stack((x_grid * y_grid, 
+                     - (f**2 + x_grid**2), 
+                     f * y_grid,
+                     f**2 + y_grid**2, 
+                     -x_grid * y_grid, 
+                     -f * x_grid,
+                     -y_grid, 
+                     x_grid, 
+                     torch.zeros_like(x_grid)), dim=-1).reshape(batch_size, channels, height, width, 3, 3)
+
+    return A, B
+
+
+def compute_image_gradient(image):
+    """
+    Compute the gradient of an image using Sobel operators.
+
+    Args:
+    image (torch.Tensor): A 4D tensor of shape (B, C, H, W) where B is the batch size,
+                          C is the number of channels, H is the height, and W is the width.
+
+    Returns:
+    torch.Tensor: The gradient magnitude of the image.
+    """
+    # Define Sobel filters
+    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32).view(1, 1, 3, 3)
+    sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32).view(1, 1, 3, 3)
+
+    # Assume image is of shape (B, C, H, W)
+    # Need to ensure the filters are on the same device and of the same data type as the image
+    sobel_x = sobel_x.to(device=image.device, dtype=image.dtype)
+    sobel_y = sobel_y.to(device=image.device, dtype=image.dtype)
+
+    # Apply filters to compute gradients
+    gradient_x = F.conv2d(image, sobel_x, padding=1)
+    gradient_y = F.conv2d(image, sobel_y, padding=1)
+
+    # Compute the gradient magnitude
+    gradients = torch.stack((gradient_x, gradient_y), dim=-1)
+
+    return gradients
+
+
 def trans_rot_vel_loss(predicted, true, lambda_weight=0.5):
     predicted_translation = predicted[:, :3]
     predicted_rotation = predicted[:, 3:]
@@ -45,7 +115,7 @@ def train_flow_net(device='cpu'):
             # Print loss every 100 batches
             if (i+1) % 100 == 0:
                 print(f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], Loss: {loss.item()}')
-    #TODO: save model
+    torch.save(flow_net, "models/flow_net.pth")
     print("NFlowNet pre-training complete!")
     return flow_net
 
@@ -74,6 +144,7 @@ def train_pose_net(device='cpu'):
             # Print loss every 10 batches
             if batch_idx % 10 == 0:
                 print(f'Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx}/{len(train_loader)}], Loss: {loss.item()}')
+    torch.save(pose_net, "models/pose_net.pth")
     print("PoseNet pre-training complete!")
     return pose_net
 
@@ -82,7 +153,8 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
     learning_rate = 1e-5
     num_epochs = 120
     batch_size = 8
-    train_dataset = TartanAirDataset()  
+    train_dataset = TartanAirDataset()
+    focal_len = train_dataset.focal
     train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
     optimizer = torch.optim.Adam(pose_net.parameters(), lr=learning_rate)
     for param in flow_net.parameters():
@@ -90,21 +162,19 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
 
     for epoch in range(num_epochs):
         pose_net.train()
-        for batch_idx, (images, true_poses) in enumerate(train_loader):
-            images = images.to(device)
-            true_poses = true_poses.to(device)
-            predicted_poses_init = pose_net(images)
-            normal_flow = flow_net(images)
-            gradients = None # get pixel gradients
+        for batch_idx, (image_pairs, _) in enumerate(train_loader): # self-supervised
+            images = image_pairs.to(device) # [B, 2, C, H, W] where B is batch size
+            predicted_poses_init = pose_net(images) # [B,6]
+            normal_flow = flow_net(images) # [B, C, H, W]
+            gradients = compute_image_gradient(images[:,0,...]) # get batch gradients direction and magnitude for first img in each pair, [B,C,H,W,2]
             
-            V_coarse = predicted_poses_init[:,0,...] # accounting for batches
-            omega_coarse = predicted_poses_init[:,1,...]
+            V_coarse = predicted_poses_init[:,:3] # accounting for batches
+            omega_coarse = predicted_poses_init[:,3:]
 
             # get x,y of pixels with max gradients (should be at edges)
             # get normals, V, omega for those pixels
             # compute A and B matrices for sampled pixels
-            A = None
-            B = None
+            A, B = compute_A_B_matrices(images.shape[0], images.shape[1], images.shape[2], images.shape[3], focal_len)
         
             chirality_node = ChiralityNode(normal_flow, gradients, A, B)
             chirality_net = DeclarativeLayer(chirality_node)
@@ -127,6 +197,7 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
             # Print loss every 10 batches
             if batch_idx % 10 == 0:
                 print(f'Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx}/{len(train_loader)}], Loss: {loss.item()}')
+    torch.save(pose_net, "models/refined_pose_net.pth")
     print("PoseNet pre-training complete!")
     return pose_net
 
