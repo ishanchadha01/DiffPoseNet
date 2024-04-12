@@ -12,36 +12,27 @@ from tqdm import tqdm
 
 def compute_A_B_matrices(batch_size, channels, height, width, f):
     # Create a meshgrid of x and y coordinates
-    y, x = torch.meshgrid(torch.arange(height), torch.arange(width))
-    
-    # Normalize x and y coordinates to be centered and in camera coordinates
-    x = x.float() - width // 2
-    y = y.float() - height // 2
+    y, x = torch.meshgrid(torch.arange(height).float() - (height - 1) / 2.0,
+                          torch.arange(width).float() - (width - 1) / 2.0)
+
+    # Normalize coordinates with the focal length
+    x = x / f
+    y = y / f
 
     # Reshape the grid so that it matches the BCHW format
     x_grid = x.view(1, 1, height, width).repeat(batch_size, channels, 1, 1)
     y_grid = y.view(1, 1, height, width).repeat(batch_size, channels, 1, 1)
     
     # Compute matrices A and B for each pixel
-    A = torch.stack((-f * torch.ones_like(x_grid), 
-                     torch.zeros_like(x_grid), 
-                     x_grid,
-                     torch.zeros_like(x_grid),
-                     -f * torch.zeros_like(y_grid), 
-                     y_grid,
-                     torch.zeros_like(x_grid), 
-                     torch.zeros_like(x_grid), 
-                     torch.ones_like(x_grid)), dim=-1).reshape(batch_size, channels, height, width, 3, 3)
+    A = torch.stack([
+            torch.stack([-1 * torch.ones_like(x_grid), torch.zeros_like(x_grid), x_grid], dim=-1),
+            torch.stack([torch.zeros_like(x_grid), -1 * torch.zeros_like(y_grid), y_grid], dim=-1)
+        ], dim=-2)
 
-    B = torch.stack((x_grid * y_grid, 
-                     - (f**2 + x_grid**2), 
-                     f * y_grid,
-                     f**2 + y_grid**2, 
-                     -x_grid * y_grid, 
-                     -f * x_grid,
-                     -y_grid, 
-                     x_grid, 
-                     torch.zeros_like(x_grid)), dim=-1).reshape(batch_size, channels, height, width, 3, 3)
+    B = torch.stack([
+            torch.stack([x_grid * y_grid, -(1 + x_grid**2), y_grid], dim=-1),
+            torch.stack([1 + y_grid**2, -x_grid * y_grid, -1 * x_grid], dim=-1),
+        ], dim=-2)
 
     return A, B
 
@@ -61,14 +52,19 @@ def compute_image_gradient(image):
     sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32).view(1, 1, 3, 3)
     sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32).view(1, 1, 3, 3)
 
+    # Replicate Sobel filters for each channel
+    C = image.size(1)
+    sobel_x = sobel_x.repeat(C, 1, 1, 1)
+    sobel_y = sobel_y.repeat(C, 1, 1, 1)
+
     # Assume image is of shape (B, C, H, W)
     # Need to ensure the filters are on the same device and of the same data type as the image
     sobel_x = sobel_x.to(device=image.device, dtype=image.dtype)
     sobel_y = sobel_y.to(device=image.device, dtype=image.dtype)
 
     # Apply filters to compute gradients
-    gradient_x = F.conv2d(image, sobel_x, padding=1)
-    gradient_y = F.conv2d(image, sobel_y, padding=1)
+    gradient_x = F.conv2d(image, sobel_x, padding=1, groups=C)
+    gradient_y = F.conv2d(image, sobel_y, padding=1, groups=C)
 
     # Compute the gradient magnitude
     gradients = torch.stack((gradient_x, gradient_y), dim=-1)
@@ -162,10 +158,10 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
 
     for epoch in range(num_epochs):
         pose_net.train()
-        for batch_idx, (image_pairs, _) in enumerate(train_loader): # self-supervised
-            images = image_pairs.to(device) # [B, 2, C, H, W] where B is batch size
+        for batch_idx, (images, _, _) in enumerate(train_loader): # self-supervised
+            images = images.to(device) # [B, 2, C, H, W] where B is batch size
             predicted_poses_init = pose_net(images) # [B,6]
-            normal_flow = flow_net(images) # [B, C, H, W]
+            normal_flow = flow_net(images[:,0], images[:,1]) # [B, C, H, W]
             gradients = compute_image_gradient(images[:,0,...]) # get batch gradients direction and magnitude for first img in each pair, [B,C,H,W,2]
             
             V_coarse = predicted_poses_init[:,:3] # accounting for batches
@@ -174,13 +170,13 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
             # get x,y of pixels with max gradients (should be at edges)
             # get normals, V, omega for those pixels
             # compute A and B matrices for sampled pixels
-            A, B = compute_A_B_matrices(images.shape[0], images.shape[1], images.shape[2], images.shape[3], focal_len)
+            A, B = compute_A_B_matrices(images.shape[0], images.shape[2], images.shape[3], images.shape[4], focal_len)
         
             chirality_node = ChiralityNode(normal_flow, gradients, A, B)
             chirality_net = DeclarativeLayer(chirality_node)
             refined_poses = chirality_net((V_coarse, omega_coarse)) # process in batches TODO does this work? check dims
-            V_refined = refined_poses[:,0,...] # account for batches
-            omega_refined = refined_poses[:,1,...]
+            V_refined = refined_poses[0,...] # account for batches
+            omega_refined = refined_poses[1,...]
 
             ## Bi-layer declarative deep net optimization
             # use coarse, refined poses and normal flow to solve
@@ -189,7 +185,7 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
             V_coarse, omega_coarse = adaptive_pose_net((V_refined, omega_refined, V_coarse, omega_coarse))
             predicted_poses = torch.cat((V_coarse, omega_coarse), dim=1)
 
-            loss = adaptive_pose_node.objective(predicted_poses) # Compute loss
+            loss = adaptive_pose_node.objective(predicted_poses) # Compute loss TODO: does this make sense?
             optimizer.zero_grad()  # Clear previous gradients
             loss.backward()  # Compute gradients of all variables wrt loss
             optimizer.step()  # Update all parameters
@@ -202,26 +198,25 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
     return pose_net
 
 
-def train(train_flow=False, train_pose=True, refine_pose=True):
+def train(train_flow=False, train_pose=False, refine_pose=True):
     # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     device = torch.device('cpu')
 
     ## Train NFlowNet
     if train_flow:
         flow_net = train_flow_net(device)
-        out = flow_net
+    else:
+        flow_net = torch.load('models/flow_net.pth').to(device)
 
     ## Train PoseNet
     if train_pose:
         pose_net = train_pose_net(device)
-        out = pose_net
+    else:
+        pose_net = torch.load('models/pose_net.pth').to(device)
 
     ## PoseNet + Chirality Layer training with Refinement
     if refine_pose:
         refined_pose_net = train_refined_net(pose_net, flow_net, device)
-        out = refined_pose_net
-
-    return out
 
 
 #TODO fix this for batched inference
