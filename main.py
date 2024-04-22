@@ -20,8 +20,8 @@ def compute_A_B_matrices(batch_size, channels, height, width, f):
     y = y / f
 
     # Reshape the grid so that it matches the BCHW format
-    x_grid = x.view(1, 1, height, width).repeat(batch_size, channels, 1, 1)
-    y_grid = y.view(1, 1, height, width).repeat(batch_size, channels, 1, 1)
+    x_grid = x.unsqueeze(0).repeat(batch_size, 1, 1)
+    y_grid = y.unsqueeze(0).repeat(batch_size, 1, 1)
     
     # Compute matrices A and B for each pixel
     A = torch.stack([
@@ -46,7 +46,7 @@ def compute_image_gradient(image):
                           C is the number of channels, H is the height, and W is the width.
 
     Returns:
-    torch.Tensor: The gradient magnitude of the image.
+    torch.Tensor: The gradient directions of the image.
     """
     # Define Sobel filters
     sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32).view(1, 1, 3, 3)
@@ -66,7 +66,9 @@ def compute_image_gradient(image):
     gradient_x = F.conv2d(image, sobel_x, padding=1, groups=C)
     gradient_y = F.conv2d(image, sobel_y, padding=1, groups=C)
 
-    # Compute the gradient magnitude
+    # Compute the gradient magnitude and average over channels
+    gradient_x = gradient_x.mean(dim=1, keepdim=False)
+    gradient_y = gradient_y.mean(dim=1, keepdim=False)
     gradients = torch.stack((gradient_x, gradient_y), dim=-1)
 
     return gradients
@@ -172,20 +174,23 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
             # compute A and B matrices for sampled pixels
             A, B = compute_A_B_matrices(images.shape[0], images.shape[2], images.shape[3], images.shape[4], focal_len)
         
+            #TODO: might be replicating this process
             chirality_node = ChiralityNode(normal_flow, gradients, A, B)
             chirality_net = DeclarativeLayer(chirality_node)
-            refined_poses = chirality_net((V_coarse, omega_coarse)) # process in batches TODO does this work? check dims
-            V_refined = refined_poses[0,...] # account for batches
-            omega_refined = refined_poses[1,...]
+            refined_poses = chirality_net(V_coarse, omega_coarse) # process in batches TODO does this work? check dims
+            # refined_poses = chirality_node.solve(V_coarse, omega_coarse)
+            V_refined = refined_poses[0] # refined_poses of shape 2,B,pose
+            omega_refined = refined_poses[1]
 
             ## Bi-layer declarative deep net optimization
             # use coarse, refined poses and normal flow to solve
             adaptive_pose_node = AdaptivePoseNode(normal_flow, gradients, A, B)
             adaptive_pose_net = DeclarativeLayer(adaptive_pose_node)
-            V_coarse, omega_coarse = adaptive_pose_net((V_refined, omega_refined, V_coarse, omega_coarse))
-            predicted_poses = torch.cat((V_coarse, omega_coarse), dim=1)
+            pose = adaptive_pose_net(V_refined, omega_refined, V_coarse, omega_coarse)
+            V_coarse = pose[0]
+            omega_coarse = pose[1]
 
-            loss = adaptive_pose_node.objective(predicted_poses) # Compute loss TODO: does this make sense?
+            loss = adaptive_pose_node.objective(V_refined, omega_refined, V_coarse, omega_coarse) # Compute loss TODO: does this make sense?
             optimizer.zero_grad()  # Clear previous gradients
             loss.backward()  # Compute gradients of all variables wrt loss
             optimizer.step()  # Update all parameters

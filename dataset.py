@@ -83,7 +83,7 @@ class TartanAirDataset(Dataset):
         print("Loading dataset images")
         self.image_pairs = []
         self.flows = []
-        img_files = sorted(os.listdir(self.img_path))
+        img_files = sorted(os.listdir(self.img_path))[:100]
         for img1, img2 in tqdm(zip(img_files[:-1], img_files[1:])):
             img_data1 = torch.tensor(cv2.imread(os.path.join(self.img_path, img1)), dtype=torch.float32).permute(2,0,1) # put channels first
             img_data2 = torch.tensor(cv2.imread(os.path.join(self.img_path, img2)), dtype=torch.float32).permute(2,0,1)
@@ -91,7 +91,8 @@ class TartanAirDataset(Dataset):
         
         # Get flows
         print("Loading dataset flows")
-        for img in tqdm(sorted(os.listdir(self.flow_path))):
+        flow_files = sorted(os.listdir(self.flow_path))[:100]
+        for img in tqdm(flow_files):
             flow_data = np.load(os.path.join(self.flow_path, img))
             flow_data = np.linalg.norm(flow_data, axis=-1) # only get magnitudes
             self.flows.append(torch.tensor(flow_data))
@@ -101,7 +102,8 @@ class TartanAirDataset(Dataset):
         self.poses = []
         f = open(self.pose_file, 'r')
         lines = f.readlines()
-        for pose1, pose2 in tqdm(zip(lines[:-1], lines[1:])):
+        line_pairs = list(zip(lines[:-1], lines[1:]))
+        for pose1, pose2 in tqdm(line_pairs[:100]):
             nums1 = [float(num) for num in pose1.split(' ')]
             nums2 = [float(num) for num in pose2.split(' ')]
             q1 = torch.tensor(nums1[3:])

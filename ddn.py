@@ -263,7 +263,7 @@ class AbstractDeclarativeNode(AbstractNode):
         f = torch.enable_grad()(self.objective)(*xs, y=y) # b
 
         # Compute partial derivative of f wrt y at (xs,y):
-        fY = grad(f, y, grad_outputs=torch.ones_like(f), create_graph=True)[0]
+        fY = grad(f, y, grad_outputs=torch.ones_like(f), create_graph=True, allow_unused=True)[0]
         fY = torch.enable_grad()(fY.reshape)(self.b, -1) # bxm
         if not fY.requires_grad: # if fY is independent of y
             fY.requires_grad = True
