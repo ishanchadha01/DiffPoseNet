@@ -219,9 +219,11 @@ def train(train_flow=False, train_pose=False, refine_pose=True):
     else:
         pose_net = torch.load('models/pose_net.pth').to(device)
 
+    c3vd_inference(flow_net, pose_net)
+
     ## PoseNet + Chirality Layer training with Refinement
-    if refine_pose:
-        refined_pose_net = train_refined_net(pose_net, flow_net, device)
+    # if refine_pose:
+    #     refined_pose_net = train_refined_net(pose_net, flow_net, device)
 
 
 #TODO fix this for batched inference
@@ -258,6 +260,14 @@ def inference():
         poses.append([V_coarse, omega_coarse])
     
     # write poses to npy and compare to c3vd
+
+
+def c3vd_inference(flow_net, pose_net):
+    imgs = None
+    # create test dataloader and get loss? then, downsample one full runthrough and plot poses. might need to train posenet more first
+    # start with just pose net, flows are important for refinement really anyways
+    # flows = flow_net(imgs)
+    poses = pose_net(imgs)
 
 
 if __name__=='__main__':
