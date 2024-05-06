@@ -68,13 +68,13 @@ class TartanAirDataset(Dataset):
 class C3VDDataset(Dataset):
     def __init__(self):
         super().__init__()
-        self.data_path = "/storage/home/hcoda1/3/ichadha3/p-ychen3538-0/ishan/DiffPoseNet/data/..."
+        self.data_path = "/storage/home/hcoda1/3/ichadha3/p-ychen3538-0/ishan/DiffPoseNet/data/cecum_t1_a"
         self.img_path = os.path.join(self.data_path, 'images')
         config_path = os.path.join(self.data_path, 'transforms_train.json')
 
         config_data = None
-        with open(config_path, "r"):
-            config_data = json.load("config_path")
+        with open(config_path, "r") as f:
+            config_data = json.load(f)
         self.focal = (config_data['fx'] + config_data['fy'])/2
 
         # Get image pairs
@@ -89,16 +89,19 @@ class C3VDDataset(Dataset):
         # Get poses
         print("Loading dataset poses")
         self.poses = []
-        for frame in config_data['frames']:
-            transform_mat = frame['transform_matrix']
-            rot_mat = transform_mat[:3,:3]
-            rpy = rot_to_euler(rot_mat)
-            translation = transform_mat[:3, 3]
-            self.poses.append(torch.cat((translation, rpy), dim=0))
+        frames = config_data['frames']
+        for frame1, frame2 in zip(frames[:-1], frames[1:]):
+            pose1 = self.get_w2c_pose(frame1)
+            pose2 = self.get_w2c_pose(frame2)
+            self.poses.append(pose2 - pose1)
 
-        # Get transformations between poses
-        for pose1, pose2 in zip(self.poses[:-1], self.poses[1:]):
-            self.rel_poses.append(pose2 - pose1) # TODO: might need to normalize angle range
+    def get_w2c_pose(self, frame):
+        c2w = np.array(frame['transform_matrix'])
+        w2c = np.linalg.inv(c2w)
+        rot_mat = w2c[:3,:3]
+        rpy = rot_to_euler(rot_mat)
+        translation = w2c[:3, 3]
+        return torch.cat((translation, rpy), dim=0)
 
     def __len__(self):
         return len(self.image_pairs)

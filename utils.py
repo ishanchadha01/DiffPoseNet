@@ -2,6 +2,9 @@ import numpy as np
 import torch
 
 
+PI = 3.1415927410125732
+
+
 def quaternion_to_euler(q):
     """
     Convert a quaternion to Euler angles (roll, pitch, yaw) using PyTorch.
@@ -64,14 +67,17 @@ def quaternion_difference(q1, q2):
     return q_diff
 
 
-def rotation_matrix_to_euler_xyz(R):
+def rot_to_euler(R):
     """
     Convert a rotation matrix to Euler angles in the XYZ sequence.
     R is a 3x3 numpy array representing the rotation matrix.
     """
     # Ensure the matrix is a proper rotation matrix
+    print(R)
+    print(np.dot(R, R.T))
+    print(np.linalg.det(R))
     assert np.allclose(np.dot(R, R.T), np.eye(3)) and np.isclose(np.linalg.det(R), 1)
-    
+
     if R[2, 1] < 1:
         if R[2, 1] > -1:
             theta_y = np.arcsin(-R[2, 1])
@@ -89,3 +95,12 @@ def rotation_matrix_to_euler_xyz(R):
         theta_x = 0
 
     return np.array([theta_x, theta_y, theta_z])
+
+
+def normalize_pose(pose):
+    """
+    Normalize euler angle to be in [0, 2*pi] range.
+    """
+    rpy = pose[3:]
+    rpy  = torch.fmod(rpy, 2 * PI)
+    return torch.cat((pose[:3], rpy), dim=0)
