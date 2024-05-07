@@ -3,9 +3,10 @@ import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from dataset import TartanAirDataset
+from dataset import TartanAirDataset, C3VDDataset
 from ddn import DeclarativeLayer
-from models import PoseNet, NFlowNet, AdaptivePoseNode, ChiralityNode2
+from models import PoseNet, NFlowNet, AdaptivePoseNode, ChiralityNode, ChiralityNode2
+from utils import normalize_pose
 
 from tqdm import tqdm
 
@@ -219,17 +220,21 @@ def train(train_flow=False, train_pose=False, refine_pose=True):
     if train_flow:
         flow_net = train_flow_net(device)
     else:
+        print("Loading flow net")
         flow_net = torch.load('models/flow_net.pth', map_location=torch.device('cpu')).to(device)
 
     ## Train PoseNet
     if train_pose:
         pose_net = train_pose_net(device)
     else:
-        pose_net = torch.load('models/pose_net.pth', map_location=torch.device('cpu')).to(device)
+        print("Loading pose net")
+        pose_net = torch.load('models/pose_net.pth').to(device)
+
+    c3vd_inference(pose_net)
 
     ## PoseNet + Chirality Layer training with Refinement
-    if refine_pose:
-        refined_pose_net = train_refined_net(pose_net, flow_net, device)
+    # if refine_pose:
+    #     refined_pose_net = train_refined_net(pose_net, flow_net, device)
 
 
 #TODO fix this for batched inference
@@ -266,6 +271,27 @@ def inference():
         poses.append([V_coarse, omega_coarse])
     
     # write poses to npy and compare to c3vd
+
+
+def c3vd_inference(pose_net):
+    batch_size = 8
+    dataset = C3VDDataset()
+    test_loader = DataLoader(dataset, batch_size=batch_size)
+    loss_func = torch.MSELoss()
+    # create test dataloader and get loss? then, downsample one full runthrough and plot poses. might need to train posenet more first
+    # start with just pose net, flows are important for refinement really anyways
+    # flows = flow_net(imgs)
+    losses = []
+    pose_net.eval()
+    for batch_idx, (img_pair, pose_true) in tqdm(test_loader):
+        pose_estimate = pose_net(img_pair)
+        pose_true = normalize_pose(pose_true)
+        pose_estimate = normalize_pose(pose_estimate)
+        loss = loss_func(pose_estimate, pose_true)
+        losses.append(loss)
+
+
+
 
 
 if __name__=='__main__':
