@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from dataset import TartanAirDataset
 from ddn import DeclarativeLayer
-from models import PoseNet, NFlowNet, AdaptivePoseNode, ChiralityNode
+from models import PoseNet, NFlowNet, AdaptivePoseNode, ChiralityNode2
 
 from tqdm import tqdm
 
@@ -123,7 +123,7 @@ def train_pose_net(device='cpu'):
     num_epochs = 30
     batch_size = 8
     train_dataset = TartanAirDataset()  
-    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     pose_net = PoseNet()
     pose_net = pose_net.to(device)
     criterion = trans_rot_vel_loss
@@ -163,8 +163,9 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
         for batch_idx, (images, _, _) in enumerate(train_loader): # self-supervised
             images = images.to(device) # [B, 2, C, H, W] where B is batch size
             predicted_poses_init = pose_net(images) # [B,6]
-            normal_flow = flow_net(images[:,0], images[:,1]) # [B, C, H, W]
-            gradients = compute_image_gradient(images[:,0,...]) # get batch gradients direction and magnitude for first img in each pair, [B,C,H,W,2]
+            normal_flow = flow_net(images[:,0], images[:,1]).clone() # [B, H, W]
+            normal_flow.requires_grad = True
+            gradients = compute_image_gradient(images[:,0,...]) # get batch gradients direction and magnitude for first img in each pair, [B,H,W,2]
             
             V_coarse = predicted_poses_init[:,:3] # accounting for batches
             omega_coarse = predicted_poses_init[:,3:]
@@ -175,30 +176,37 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
             A, B = compute_A_B_matrices(images.shape[0], images.shape[2], images.shape[3], images.shape[4], focal_len)
         
             #TODO: might be replicating this process
-            chirality_node = ChiralityNode(normal_flow, gradients, A, B)
-            chirality_net = DeclarativeLayer(chirality_node)
-            refined_poses = chirality_net(V_coarse, omega_coarse) # process in batches TODO does this work? check dims
+            chirality_node = ChiralityNode2(normal_flow, gradients, A, B)
+            # chirality_net = DeclarativeLayer(chirality_node)
+            # V_coarse.requires_grad = True
+            # omega_coarse.requires_grad = True
+            refined_poses = chirality_node(V_coarse, omega_coarse) # process in batches TODO does this work? check dims
             # refined_poses = chirality_node.solve(V_coarse, omega_coarse)
-            V_refined = refined_poses[0] # refined_poses of shape 2,B,pose
-            omega_refined = refined_poses[1]
+            V_refined = refined_poses[:,0] # refined_poses of shape B,2,pose
+            omega_refined = refined_poses[:,1]
+            loss = chirality_node.objective(V_refined, omega_refined)
 
-            ## Bi-layer declarative deep net optimization
-            # use coarse, refined poses and normal flow to solve
-            adaptive_pose_node = AdaptivePoseNode(normal_flow, gradients, A, B)
-            adaptive_pose_net = DeclarativeLayer(adaptive_pose_node)
-            pose = adaptive_pose_net(V_refined, omega_refined, V_coarse, omega_coarse)
-            V_coarse = pose[0]
-            omega_coarse = pose[1]
+            # ## Bi-layer declarative deep net optimization
+            # # use coarse, refined poses and normal flow to solve
+            # adaptive_pose_node = AdaptivePoseNode(normal_flow, gradients, A, B)
+            # adaptive_pose_net = DeclarativeLayer(adaptive_pose_node)
+            # pose = adaptive_pose_net(V_refined, omega_refined, V_coarse, omega_coarse)
+            # V_coarse = pose[:,0]
+            # omega_coarse = pose[:,1]
 
-            loss = adaptive_pose_node.objective(V_refined, omega_refined, V_coarse, omega_coarse) # Compute loss TODO: does this make sense?
+            # loss = adaptive_pose_node.objective(V_refined, omega_refined, V_coarse, omega_coarse) # Compute loss TODO: does this make sense?
             optimizer.zero_grad()  # Clear previous gradients
+
+            for name, param in pose_net.named_parameters():
+                print(name, param.requires_grad)
+
             loss.backward()  # Compute gradients of all variables wrt loss
             optimizer.step()  # Update all parameters
 
             # Print loss every 10 batches
             if batch_idx % 10 == 0:
                 print(f'Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx}/{len(train_loader)}], Loss: {loss.item()}')
-    torch.save(pose_net, "models/refined_pose_net.pth")
+    # torch.save(pose_net, "models/refined_pose_net.pth")
     print("PoseNet pre-training complete!")
     return pose_net
 
@@ -211,13 +219,13 @@ def train(train_flow=False, train_pose=False, refine_pose=True):
     if train_flow:
         flow_net = train_flow_net(device)
     else:
-        flow_net = torch.load('models/flow_net.pth').to(device)
+        flow_net = torch.load('models/flow_net.pth', map_location=torch.device('cpu')).to(device)
 
     ## Train PoseNet
     if train_pose:
         pose_net = train_pose_net(device)
     else:
-        pose_net = torch.load('models/pose_net.pth').to(device)
+        pose_net = torch.load('models/pose_net.pth', map_location=torch.device('cpu')).to(device)
 
     ## PoseNet + Chirality Layer training with Refinement
     if refine_pose:

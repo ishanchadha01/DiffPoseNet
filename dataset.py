@@ -73,7 +73,8 @@ def quaternion_difference(q1, q2):
 class TartanAirDataset(Dataset):
     def __init__(self):
         super().__init__()
-        self.data_path = "/storage/home/hcoda1/3/ichadha3/scratch/data/abandonedfactory/Hard/abandonedfactory/Hard/P000/"
+        # self.data_path = "/storage/home/hcoda1/3/ichadha3/scratch/data/abandonedfactory/Hard/abandonedfactory/Hard/P000/"
+        self.data_path = "/Users/ishan/Documents/research/DiffPoseNet/small_data"
         self.img_path = os.path.join(self.data_path, 'image_left')
         self.flow_path = os.path.join(self.data_path, 'flow')
         self.pose_file = os.path.join(self.data_path, 'pose_left.txt')
@@ -83,7 +84,7 @@ class TartanAirDataset(Dataset):
         print("Loading dataset images")
         self.image_pairs = []
         self.flows = []
-        img_files = sorted(os.listdir(self.img_path))[:100]
+        img_files = sorted(os.listdir(self.img_path))
         for img1, img2 in tqdm(zip(img_files[:-1], img_files[1:])):
             img_data1 = torch.tensor(cv2.imread(os.path.join(self.img_path, img1)), dtype=torch.float32).permute(2,0,1) # put channels first
             img_data2 = torch.tensor(cv2.imread(os.path.join(self.img_path, img2)), dtype=torch.float32).permute(2,0,1)
@@ -91,7 +92,7 @@ class TartanAirDataset(Dataset):
         
         # Get flows
         print("Loading dataset flows")
-        flow_files = sorted(os.listdir(self.flow_path))[:100]
+        flow_files = sorted(os.listdir(self.flow_path))[:10]
         for img in tqdm(flow_files):
             flow_data = np.load(os.path.join(self.flow_path, img))
             flow_data = np.linalg.norm(flow_data, axis=-1) # only get magnitudes
@@ -102,7 +103,7 @@ class TartanAirDataset(Dataset):
         self.poses = []
         f = open(self.pose_file, 'r')
         lines = f.readlines()
-        line_pairs = list(zip(lines[:-1], lines[1:]))
+        line_pairs = list(zip(lines[:-1], lines[1:]))[:10]
         for pose1, pose2 in tqdm(line_pairs[:100]):
             nums1 = [float(num) for num in pose1.split(' ')]
             nums2 = [float(num) for num in pose2.split(' ')]

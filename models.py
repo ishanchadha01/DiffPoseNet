@@ -147,7 +147,7 @@ class ChiralityNode(AbstractDeclarativeNode):
         self.B = B # Matrix for the motion flow field due to rotation
         #TODO: adjust eps based on convergence
 
-    def objective(self, *xs, y=0):
+    def objective(self, V, omega, y=0):
         """
         Compute the chirality objective for optimization over sampled pixels.
 
@@ -167,30 +167,36 @@ class ChiralityNode(AbstractDeclarativeNode):
         # N_x is [N, 1]
         # A and B are [2, 3]
         # V and Omega are [N,3]
-        V, omega = xs
         cost = torch.einsum('bhwi,bhwij,bj->bhw', self.G_x, self.A, V) * (self.N_x - torch.einsum('bhwi,bhwij,bj->bhw', self.G_x, self.B, omega)) # [N,1]
         smooth_cost = -F.gelu(cost) # twice differentiable and bias towards positive value, enforcing constraint
-        total_cost = torch.sum(smooth_cost) #TODO: maybe take expected value?
+        total_cost = torch.mean(smooth_cost) #TODO: maybe take expected value?
         return total_cost - y
     
-    def solve(self, *xs):
-        V_refined, omega_refined = xs
-        optimizer = torch.optim.LBFGS([V_refined.detach(), omega_refined.detach()], lr=1, max_iter=20, line_search_fn='strong_wolfe')
+    def solve(self, V_refined, omega_refined):
+        V = V_refined.clone().requires_grad_()
+        omega = omega_refined.clone().requires_grad_()
+        y = self._run_optimization(V, omega)
+        return y
+        
+    def _run_optimization(self, V, omega):
+        with torch.enable_grad():
+            optimizer = torch.optim.LBFGS(
+                [V, omega], 
+                lr=1, 
+                max_iter=20, 
+                line_search_fn='strong_wolfe')
 
-        def closure():
-            if torch.is_grad_enabled():
-                optimizer.zero_grad() # Zero out gradients
+            def closure():
+                optimizer.zero_grad()
+                f = self.objective(V, omega)
+                f.backward(retain_graph=True)
+                return f
 
-            loss = self.objective(V_refined, omega_refined)
-
-            if loss.requires_grad: #TODO: is this necessary?
-                loss.backward(retain_graph=True)
-            return loss
-
-        optimizer.step(closure)
+            optimizer.step(closure)
 
         # return output, ctx
-        return torch.stack([V_refined, omega_refined]), None
+        y = torch.stack([V, omega], dim=1)
+        return y.detach(), None
 
 #TODO batch computation
 class AdaptivePoseNode(AbstractDeclarativeNode):
@@ -236,7 +242,7 @@ class AdaptivePoseNode(AbstractDeclarativeNode):
         quotient[torch.isinf(quotient)] = 0
         coarse_error = torch.einsum('bhw,bhwij,bj->bhwi', quotient, self.A, V_coarse_init) - torch.einsum('bhwij,bj->bhwi', self.B, omega_coarse_init) # bchw2
         cost = self.N_x - torch.einsum('bhwi,bhwi->bhw', self.G_x, coarse_error) # [N]
-        total_cost = torch.sum(cost) # TODO might need to take the average, but does it matter? only difference is that it'll take longer to converge
+        total_cost = torch.mean(cost) # TODO might need to take the average, but does it matter? only difference is that it'll take longer to converge
         return total_cost - y
     
     def solve(self, *xs):
@@ -247,16 +253,81 @@ class AdaptivePoseNode(AbstractDeclarativeNode):
             if torch.is_grad_enabled():
                 optimizer.zero_grad() # Zero out gradients
 
-            pose_refined = self.chirality_net(V_coarse, omega_coarse)
-            V_refined = pose_refined[0]
-            omega_refined = pose_refined[1]
+            # pose_refined = self.chirality_net(V_coarse, omega_coarse)
+            # V_refined = pose_refined[:,0]
+            # omega_refined = pose_refined[:,1]
             
-            loss = self.objective(V_coarse.detach(), omega_coarse.detach(), V_refined.detach(), omega_refined.detach())
+            loss = self.objective(V_refined.detach(), omega_refined.detach(), V_coarse, omega_coarse)
 
-            if loss.requires_grad: #TODO: is this necessary?
-                loss.backward(retain_graph=True)
+            # if loss.requires_grad: #TODO: is this necessary?
+            #     loss.backward(retain_graph=True)
             return loss
 
         optimizer.step(closure)
-        return torch.stack([V_coarse, omega_coarse]), None
+        return torch.stack([V_coarse, omega_coarse], dim=1), None
 
+
+
+class ChiralityNode2(torch.nn.Module):
+    """
+    Node that solves pose chirality optimization problem
+    """
+    def __init__(self):
+        super().__init__()
+
+    def __init__(self, N_x, G_x, A, B):
+        super().__init__()
+        self.N_x = N_x # Magnitude of the normal flow for all pixels
+        self.G_x = G_x # The image gradients for all pixels
+        self.A = A # Matrix for the motion flow field due to translation
+        self.B = B # Matrix for the motion flow field due to rotation
+        #TODO: adjust eps based on convergence
+
+    def objective(self, V, omega, y=0):
+        """
+        Compute the chirality objective for optimization over sampled pixels.
+
+        Args:
+        - V: Tensor representing the constant translational velocity.
+        - omega: Tensor representing the rotational velocity.
+        - G_x: Matrix representing the direction of the image gradients for all pixels.
+        - N_x: Vector representing the magnitude of the normal flow for all pixels.
+        - A: Tensor representing the matrix involved in the motion flow field projection due to translation.
+        - B: Tensor representing the matrix involved in the motion flow field projection due to rotation.
+
+        Returns:
+        - A tensor representing the value of the objective function R for all pixels.
+        """
+        # Ensure that G_x, Beta, Z_x, V, and Omega have the right shapes for batch matrix operations
+        # G_x is [N, 2]
+        # N_x is [N, 1]
+        # A and B are [2, 3]
+        # V and Omega are [N,3]
+        cost = torch.einsum('bhwi,bhwij,bj->bhw', self.G_x, self.A, V) * (self.N_x - torch.einsum('bhwi,bhwij,bj->bhw', self.G_x, self.B, omega)) # [N,1]
+        smooth_cost = -F.gelu(cost) # twice differentiable and bias towards positive value, enforcing constraint
+        total_cost = torch.mean(smooth_cost) #TODO: maybe take expected value?
+        return total_cost - y
+    
+
+        
+    def forward(self, V_refined, omega_refined):
+        V = V_refined.detach().requires_grad_()
+        omega = omega_refined.detach().requires_grad_()
+        with torch.enable_grad():
+            optimizer = torch.optim.LBFGS(
+                [V, omega], 
+                lr=1, 
+                max_iter=20, 
+                line_search_fn='strong_wolfe')
+
+            def closure():
+                optimizer.zero_grad()
+                f = self.objective(V, omega)
+                f.backward(retain_graph=True)
+                return f
+
+            optimizer.step(closure)
+
+        # return output, ctx
+        y = torch.stack([V, omega], dim=1)
+        return y.detach()

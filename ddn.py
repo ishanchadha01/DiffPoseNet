@@ -22,6 +22,8 @@ import torch
 from torch.autograd import grad
 import warnings
 
+import torchviz
+
 
 class AbstractNode:
     """Minimal interface for generic data processing node
@@ -267,6 +269,11 @@ class AbstractDeclarativeNode(AbstractNode):
         fY = torch.enable_grad()(fY.reshape)(self.b, -1) # bxm
         if not fY.requires_grad: # if fY is independent of y
             fY.requires_grad = True
+
+        # # Visualize fY using torchviz
+        # dot = torchviz.make_dot(fY, params=dict(list(zip(["x" + str(i) for i in range(len(xs))], xs)) + [('y', y)]))
+        # dot.render('fY_graph', format='png')  # Save the graph to a file
+        # dot.view()
         
         # Compute second-order partial derivative of f wrt y at (xs,y):
         fYY = self._batch_jacobian(fY, y) # bxmxm
