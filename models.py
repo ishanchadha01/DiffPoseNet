@@ -2,8 +2,9 @@ import torch
 from torch.autograd import Function
 import torch.nn.functional as F
 from torchvision.models import vgg16
+import numpy as np
 
-from ddn import AbstractDeclarativeNode, DeclarativeLayer
+from ddn import AbstractDeclarativeNode, ComposedNode
 
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -131,7 +132,6 @@ class PoseNet(torch.nn.Module):
         return predicted_pose
 
 
-#TODO: batch computation
 class ChiralityNode(AbstractDeclarativeNode):
     """
     Node that solves pose chirality optimization problem
@@ -169,7 +169,7 @@ class ChiralityNode(AbstractDeclarativeNode):
         # V and Omega are [N,3]
         cost = torch.einsum('bhwi,bhwij,bj->bhw', self.G_x, self.A, V) * (self.N_x - torch.einsum('bhwi,bhwij,bj->bhw', self.G_x, self.B, omega)) # [N,1]
         smooth_cost = -F.gelu(cost) # twice differentiable and bias towards positive value, enforcing constraint
-        total_cost = torch.mean(smooth_cost) #TODO: maybe take expected value?
+        total_cost = torch.mean(smooth_cost) # take expected value
         return total_cost - y
     
     def solve(self, V_refined, omega_refined):
@@ -198,7 +198,7 @@ class ChiralityNode(AbstractDeclarativeNode):
         y = torch.stack([V, omega], dim=1)
         return y.detach(), None
 
-#TODO batch computation
+
 class AdaptivePoseNode(AbstractDeclarativeNode):
     """
     Node that solves Adaptive pose optimization problem
@@ -265,7 +265,6 @@ class AdaptivePoseNode(AbstractDeclarativeNode):
 
         optimizer.step(closure)
         return torch.stack([V_coarse, omega_coarse], dim=1), None
-
 
 
 class ChiralityNode2(torch.nn.Module):
@@ -342,3 +341,34 @@ class AdaptivePoseNode2(torch.nn.Module):
 
     def backward(self):
         pass
+
+
+class ComposedNode(AbstractDeclarativeNode):
+    """Composes two deep declarative nodes f and g to produce y = g(f(x)). The resulting composition
+    behaves exactly like a single deep declarative node, that is, it has the same interface and
+    as such can be further composed with other nodes to form a chain."""
+
+    def __init__(self, nodeA, nodeB):
+        assert (nodeA.dim_y == nodeB.dim_x)
+        super().__init__(nodeA.dim_x, nodeB.dim_y)
+        self.nodeA = nodeA
+        self.nodeB = nodeB
+
+    def solve(self, x):
+        """Overrides the solve method to first compute z = nodeA.solve(x) and then y = nodeB.solve(z). Returns
+        the dual variables from both nodes."""
+        z, ctxA = self.nodeA.solve(x)
+        y, ctxB = self.nodeB.solve(z)
+        return y, {'ctxA': ctxA, 'ctxB': ctxB, 'z': z}
+
+    def gradient(self, x, y=None, ctx=None):
+        """Overrides the gradient method to compute the composed gradient by the chain rule."""
+
+        # we need to resolve for z since there is currently no way to store this
+        if ctx is None:
+            z, _ = self.nodeA.solve(x)
+        else:
+            z = ctx['z']
+        Dz = self.nodeA.gradient(x, z).reshape(self.nodeA.dim_y, self.nodeA.dim_x)
+        Dy = self.nodeB.gradient(z, y).reshape(self.nodeB.dim_y, self.nodeB.dim_x)
+        return np.dot(Dy, Dz)

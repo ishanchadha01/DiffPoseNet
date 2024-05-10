@@ -198,6 +198,14 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
             # V_coarse = pose[:,0]
             # omega_coarse = pose[:,1]
 
+            adaptive_pose_iters = 10
+            for a_iter in range(adaptive_pose_iters):
+                pass
+                # node solve chirality node
+                # use as input to upper layer objective that exists without actual node
+                # solvw using lbfgs
+
+
             # loss = adaptive_pose_node.objective(V_refined, omega_refined, V_coarse, omega_coarse) # Compute loss TODO: does this make sense?
             optimizer.zero_grad()  # Clear previous gradients
 
