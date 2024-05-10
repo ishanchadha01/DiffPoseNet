@@ -331,3 +331,14 @@ class ChiralityNode2(torch.nn.Module):
         # return output, ctx
         y = torch.stack([V, omega], dim=1)
         return y.detach()
+    
+
+class AdaptivePoseNode2(torch.nn.Module):
+    def __init__(self):
+        pass
+
+    def forward(self):
+        pass
+
+    def backward(self):
+        pass

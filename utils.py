@@ -5,6 +5,36 @@ import torch
 PI = 3.1415927410125732
 
 
+def euler_to_homogeneous(xyzrpy):
+    '''
+    XYZRPY to homogenous transformation matrix
+    '''
+    x, y, z, roll, pitch, yaw = xyzrpy
+
+    # Create individual rotation matrices
+    Rx = np.array([[1, 0, 0],
+                   [0, np.cos(roll), -np.sin(roll)],
+                   [0, np.sin(roll), np.cos(roll)]])
+
+    Ry = np.array([[np.cos(pitch), 0, np.sin(pitch)],
+                   [0, 1, 0],
+                   [-np.sin(pitch), 0, np.cos(pitch)]])
+
+    Rz = np.array([[np.cos(yaw), -np.sin(yaw), 0],
+                   [np.sin(yaw), np.cos(yaw), 0],
+                   [0, 0, 1]])
+
+    # Combine rotations: first yaw, then pitch, then roll
+    R = Rz @ Ry @ Rx
+
+    # Create the homogeneous transformation matrix
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = [x, y, z]
+
+    return T
+
+
 def quaternion_to_euler(q):
     """
     Convert a quaternion to Euler angles (roll, pitch, yaw) using PyTorch.

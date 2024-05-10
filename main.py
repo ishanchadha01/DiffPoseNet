@@ -2,12 +2,15 @@
 import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
+import cv2
+import numpy as np
 
 from dataset import TartanAirDataset, C3VDDataset
 from ddn import DeclarativeLayer
 from models import PoseNet, NFlowNet, AdaptivePoseNode, ChiralityNode, ChiralityNode2
-from utils import normalize_pose
+from utils import normalize_pose, euler_to_homogeneous
 
+import os
 from tqdm import tqdm
 
 
@@ -230,47 +233,45 @@ def train(train_flow=False, train_pose=False, refine_pose=True):
         print("Loading pose net")
         pose_net = torch.load('models/pose_net.pth').to(device)
 
-    c3vd_inference(pose_net)
+    # c3vd_inference(pose_net)
 
-    ## PoseNet + Chirality Layer training with Refinement
-    # if refine_pose:
-    #     refined_pose_net = train_refined_net(pose_net, flow_net, device)
+    # PoseNet + Chirality Layer training with Refinement
+    if refine_pose:
+        refined_pose_net = train_refined_net(pose_net, flow_net, device)
 
 
 #TODO fix this for batched inference
 def inference():
-    ## Chirality optimization step
-    # load pose model output for coarse pose
-    # load nflownet output for normal flow
-    # solve in 1 step using l-bfgs for v, then omega, to get refined pose
-    images = None
-    N = .05 * len(images) # use 5% pixels sample each time
-    poses = []
-    for img1, img2 in zip(images[:-1], images[1:]):
+    device = 'cpu'
+    pose_net = torch.load('models/pose_net.pth', map_location=torch.device('cpu')).to(device)
+    # flow_net = torch.load('models/flow_net.pth', map_location=torch.device('cpu')).to(device)
+    pose_net.eval()
+    # flow_net.eval()
+    transforms = []
+    imgs = sorted(os.listdir('./pipe_data/image_left'))
+    for img_pair_files in tqdm(zip(imgs[:-1], imgs[1:])):
+        img_pair_paths = [os.path.join('./pipe_data/image_left', fname) for fname in img_pair_files]
+        img_pair = torch.stack((
+            torch.from_numpy(cv2.imread(img_pair_paths[0])[::2, ::2, :]).permute(2,0,1).float(), 
+            torch.from_numpy(cv2.imread(img_pair_paths[1])[::2, ::2, :]).permute(2,0,1).float()
+        ), dim=0).unsqueeze(0)
+        transform = pose_net(img_pair).detach().numpy()
+        # flow = flow_net(img_pair[:,0], img_pair[:,1]).detach().squeeze(0).numpy()
+        print(f"Images: {img_pair_files[0]} {img_pair_files[1]}")
+        print(f"Transform: {transform}")
+        transforms.append(transform)
+        # cv2.imwrite(f"./pipe_data/flows_pred/flow_{img_pair_files[0]}_{img_pair_files[1]}", flow)
 
-        # only need to do 5 iterations of this
+    # Starting at origin, map where camera moves
+    points = np.zeros((len(transforms)+1, 3, 1))
+    for i, transform in enumerate(transforms):
+        homogenous_point = np.ones((4,1))
+        homogenous_point[:3] = points[i]
+        T = euler_to_homogeneous(transform[0])
+        new_homogenous_point = T @ homogenous_point
+        points[i+1] = new_homogenous_point[:3]
+    print(points)
 
-        V_coarse, omega_coarse = None # get output from posenet
-        normal_flow = None # get output from NFlowNet
-        gradients = None # get pixel gradients
-        # depths = None # use depth anything for rough depth estimate
-
-        # get x,y of pixels with max gradients (should be at edges)
-        # get normals, V, omega for those pixels
-        # compute A and B matrices for sampled pixels
-        A = None
-        B = None
-        
-        chirality_net = DeclarativeLayer(ChiralityNode(normal_flow, gradients, A, B))
-        V_refined, omega_refined = chirality_net((V_coarse, omega_coarse))
-
-        ## Bi-layer declarative deep net optimization
-        # use coarse, refined poses and normal flow to solve
-        adaptive_pose_net = DeclarativeLayer(AdaptivePoseNode(normal_flow, gradients, A, B))
-        V_coarse, omega_coarse = adaptive_pose_net((V_refined, omega_refined, V_coarse, omega_coarse))
-        poses.append([V_coarse, omega_coarse])
-    
-    # write poses to npy and compare to c3vd
 
 
 def c3vd_inference(pose_net):
@@ -295,4 +296,5 @@ def c3vd_inference(pose_net):
 
 
 if __name__=='__main__':
-    train()
+    # train()
+    inference()

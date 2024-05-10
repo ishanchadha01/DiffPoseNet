@@ -1,4 +1,4 @@
 models/
 __pycache__/
-small_data/
+*_data/
 data/
