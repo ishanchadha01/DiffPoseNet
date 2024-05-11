@@ -15,8 +15,8 @@ from utils import rot_to_euler, quaternion_to_euler, quaternion_difference
 class TartanAirDataset(Dataset):
     def __init__(self):
         super().__init__()
-        # self.data_path = "/storage/home/hcoda1/3/ichadha3/scratch/data/abandonedfactory/Hard/abandonedfactory/Hard/P000/"
-        self.data_path = "/Users/ishan/Documents/research/DiffPoseNet/small_data"
+        self.data_path = "/storage/home/hcoda1/3/ichadha3/scratch/data/abandonedfactory/Hard/abandonedfactory/Hard/P000/"
+        # self.data_path = "/Users/ishan/Documents/research/DiffPoseNet/small_data"
         self.img_path = os.path.join(self.data_path, 'image_left')
         self.flow_path = os.path.join(self.data_path, 'flow')
         self.pose_file = os.path.join(self.data_path, 'pose_left.txt')
@@ -46,7 +46,7 @@ class TartanAirDataset(Dataset):
         f = open(self.pose_file, 'r')
         lines = f.readlines()
         line_pairs = list(zip(lines[:-1], lines[1:]))[:10]
-        for pose1, pose2 in tqdm(line_pairs[:100]):
+        for pose1, pose2 in tqdm(line_pairs):
             nums1 = [float(num) for num in pose1.split(' ')]
             nums2 = [float(num) for num in pose2.split(' ')]
             q1 = torch.tensor(nums1[3:])
@@ -59,7 +59,8 @@ class TartanAirDataset(Dataset):
 
 
     def __len__(self):
-        return len(self.image_pairs)
+        # return len(self.image_pairs)
+        return 10 # temp for debugging
     
     def __getitem__(self, idx):
         return self.image_pairs[idx], self.flows[idx], self.poses[idx]

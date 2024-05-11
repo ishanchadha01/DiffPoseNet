@@ -7,7 +7,7 @@ import numpy as np
 
 from dataset import TartanAirDataset, C3VDDataset
 from ddn import DeclarativeLayer
-from models import PoseNet, NFlowNet, AdaptivePoseNode, ChiralityNode, ChiralityNode2
+from models import PoseNet, NFlowNet, ChiralityNode, ChiralityNode2, AdaptivePoseUpperCost
 from utils import normalize_pose, euler_to_homogeneous
 
 import os
@@ -158,7 +158,7 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
     train_dataset = TartanAirDataset()
     focal_len = train_dataset.focal
     train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-    optimizer = torch.optim.Adam(pose_net.parameters(), lr=learning_rate)
+    optimizer_nn = torch.optim.Adam(pose_net.parameters(), lr=learning_rate)
     for param in flow_net.parameters():
         param.requires_grad = False
 
@@ -179,45 +179,49 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
             # compute A and B matrices for sampled pixels
             A, B = compute_A_B_matrices(images.shape[0], images.shape[2], images.shape[3], images.shape[4], focal_len)
         
-            #TODO: might be replicating this process
             chirality_node = ChiralityNode2(normal_flow, gradients, A, B)
-            # chirality_net = DeclarativeLayer(chirality_node)
-            # V_coarse.requires_grad = True
-            # omega_coarse.requires_grad = True
             refined_poses = chirality_node(V_coarse, omega_coarse) # process in batches TODO does this work? check dims
-            # refined_poses = chirality_node.solve(V_coarse, omega_coarse)
             V_refined = refined_poses[:,0] # refined_poses of shape B,2,pose
             omega_refined = refined_poses[:,1]
             loss = chirality_node.objective(V_refined, omega_refined)
 
-            # ## Bi-layer declarative deep net optimization
-            # # use coarse, refined poses and normal flow to solve
-            # adaptive_pose_node = AdaptivePoseNode(normal_flow, gradients, A, B)
-            # adaptive_pose_net = DeclarativeLayer(adaptive_pose_node)
-            # pose = adaptive_pose_net(V_refined, omega_refined, V_coarse, omega_coarse)
-            # V_coarse = pose[:,0]
-            # omega_coarse = pose[:,1]
-
-            adaptive_pose_iters = 10
-            for a_iter in range(adaptive_pose_iters):
-                pass
-                # node solve chirality node
-                # use as input to upper layer objective that exists without actual node
-                # solvw using lbfgs
-
-
-            # loss = adaptive_pose_node.objective(V_refined, omega_refined, V_coarse, omega_coarse) # Compute loss TODO: does this make sense?
-            optimizer.zero_grad()  # Clear previous gradients
-
+            optimizer_nn.zero_grad()  # Clear previous gradients
             for name, param in pose_net.named_parameters():
                 print(name, param.requires_grad)
 
             loss.backward()  # Compute gradients of all variables wrt loss
-            optimizer.step()  # Update all parameters
+            optimizer_nn.step()  # Update all parameters
 
             # Print loss every 10 batches
             if batch_idx % 10 == 0:
                 print(f'Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx}/{len(train_loader)}], Loss: {loss.item()}')
+
+
+        # Perform adaptive refinement at the end
+        for batch_idx, (images, _, _) in enumerate(train_loader): # self-supervised
+            ## Get coarse pose initiaization
+            predicted_poses_init = pose_net(images) # [B,6]
+            normal_flow = flow_net(images[:,0], images[:,1]).clone() # [B, H, W]
+            normal_flow.requires_grad = True
+            gradients = compute_image_gradient(images[:,0,...]) # get batch gradients direction and magnitude for first img in each pair, [B,H,W,2]
+            V_coarse = predicted_poses_init[:,:3] # accounting for batches
+            omega_coarse = predicted_poses_init[:,3:]
+            
+            ## Solve bilayer optimization
+            lower_cost_layer = DeclarativeLayer(ChiralityNode(normal_flow, gradients, A, B))
+            V_coarse = V_coarse.detach().requires_grad_()
+            omega_coarse = omega_coarse.detach().requires_grad_()
+            optimizer_ddn = torch.optim.LBFGS([V_coarse, omega_coarse], lr=1, max_iter=20, line_search_fn='strong_wolfe')
+            def closure():
+                optimizer_ddn.zero_grad()
+                P_refined = lower_cost_layer(V_coarse, omega_coarse)
+                V_refined = P_refined[:,:3]
+                omega_refined = P_refined[:,3:]
+                loss = AdaptivePoseUpperCost(V_refined, omega_refined, V_coarse, omega_coarse, normal_flow, gradients, A, B) #TODO: fix dims
+                loss.backward(retain_graph=True)
+            optimizer_ddn.step(closure)
+            
+
     # torch.save(pose_net, "models/refined_pose_net.pth")
     print("PoseNet pre-training complete!")
     return pose_net
@@ -304,5 +308,5 @@ def c3vd_inference(pose_net):
 
 
 if __name__=='__main__':
-    # train()
-    inference()
+    train()
+    # inference()
