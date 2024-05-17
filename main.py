@@ -169,7 +169,7 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
             ### First do chirality layer pass
             images = images.to(device) # [B, 2, C, H, W] where B is batch size
             predicted_poses_init = pose_net(images) # [B,6]
-            normal_flow = flow_net(images[:,0], images[:,1]).clone() # [B, H, W]
+            normal_flow = flow_net(images[:,0], images[:,1]).detach().clone() # [B, H, W]
             normal_flow.requires_grad = True
             gradients = compute_image_gradient(images[:,0,...]) # get batch gradients direction and magnitude for first img in each pair, [B,H,W,2]
             
@@ -185,8 +185,8 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
             refined_poses = chirality_node(V_coarse, omega_coarse) # process in batches TODO does this work? check dims
             V_refined = refined_poses[:,0] # refined_poses of shape B,2,pose
             omega_refined = refined_poses[:,1]
-            nn_loss = torch.no_grad()(chirality_node.objective)(V_refined, omega_refined)
-            # loss = chirality_node.objective(V_refined, omega_refined)
+            # nn_loss = torch.no_grad()(chirality_node.objective)(V_refined, omega_refined)
+            nn_loss = chirality_node.objective(V_refined, omega_refined)
 
             optimizer_nn.zero_grad()  # Clear previous gradients
             # for name, param in pose_net.named_parameters():
@@ -195,9 +195,9 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
             nn_loss.backward()  # Compute gradients of all variables wrt loss
             optimizer_nn.step()  # Update all parameters
 
-            # Print loss every 10 batches
-            if batch_idx % 10 == 0:
-                print(f'Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx}/{len(train_loader)}], Loss: {loss.item()}')
+            # # Print loss every 10 batches
+            # if batch_idx % 10 == 0:
+            #     print(f'Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx}/{len(train_loader)}], Loss: {nn_loss.item()}')
 
 
             ### Perform adaptive refinement at the end with bilayer optimization
@@ -212,6 +212,10 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
             P_r = bilevel_opt(P_c)
             ddn_loss = torch.no_grad()(bilevel_opt)(P_c, y=P_r)
             ddn_loss.backward()
+
+            # Print loss every 10 batches
+            if batch_idx % 10 == 0:
+                print(f'Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx}/{len(train_loader)}], NN Loss: {nn_loss.item()}, DDN Loss: {ddn_loss.item()}')
             
 
     # torch.save(pose_net, "models/refined_pose_net.pth")
@@ -220,22 +224,21 @@ def train_refined_net(pose_net, flow_net, device='cpu'):
 
 
 def train(train_flow=False, train_pose=False, refine_pose=True):
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    device = torch.device('cpu')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     ## Train NFlowNet
     if train_flow:
         flow_net = train_flow_net(device)
     else:
         print("Loading flow net")
-        flow_net = torch.load('models/flow_net.pth', map_location=torch.device('cpu')).to(device)
+        flow_net = torch.load('models/flow_net.pth', map_location=device).to(device)
 
     ## Train PoseNet
     if train_pose:
         pose_net = train_pose_net(device)
     else:
         print("Loading pose net")
-        pose_net = torch.load('models/pose_net.pth').to(device)
+        pose_net = torch.load('models/pose_net.pth', map_location=device).to(device)
 
     # c3vd_inference(pose_net)
 

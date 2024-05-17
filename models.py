@@ -212,7 +212,7 @@ class BilevelOptimization(AbstractDeclarativeNode):
 
         P_c = P_c.clone().requires_grad_()
         with torch.enable_grad():
-            if not self.P_r_init:
+            if self.P_r_init is None:
                 P_r = torch.ones_like(P_c)
             else:
                 P_r = self.P_r_init
@@ -260,8 +260,8 @@ class BilevelOptimization(AbstractDeclarativeNode):
         optimizer_ddn = torch.optim.LBFGS([P_c], lr=1, max_iter=20, line_search_fn='strong_wolfe')
         def closure():
             optimizer_ddn.zero_grad()
-            loss = AdaptivePoseUpperCost(P_r, P_c, self.N_x, self.G_x, self.A, self.B)
-            loss.backward(retain_graph=True)
+            loss = AdaptivePoseUpperCost(P_r, P_c, self.N_x, self.G_x, self.A, self.B)/1e6
+            loss.backward(retain_graph=True) #TODO: this is causing loss to become Nonetype, make sure everything is detached
         optimizer_ddn.step(closure)
 
         # compute objective of bottom level
@@ -272,6 +272,7 @@ class BilevelOptimization(AbstractDeclarativeNode):
               * (self.N_x - torch.einsum('bhwi,bhwij,bj->bhw', self.G_x, self.B, omega_coarse)) # [B,H,W]
         smooth_cost = -F.gelu(cost) # twice differentiable and bias towards positive value, enforcing constraint
         total_cost = torch.mean(smooth_cost) # take expected value
+        print(total_cost)
         return total_cost
 
 
@@ -289,4 +290,5 @@ def AdaptivePoseUpperCost(P_r, P_c, N_x, G_x, A, B):
     coarse_error = torch.einsum('bhw,bhwij,bj->bhwi', quotient, A, V_coarse) - torch.einsum('bhwij,bj->bhwi', B, omega_coarse) # bchw2
     cost = N_x - torch.einsum('bhwi,bhwi->bhw', G_x, coarse_error) # [N]
     total_cost = torch.mean(cost) # TODO might need to take the average, but does it matter? only difference is that it'll take longer to converge
+    print(f"upper cost: {total_cost}")
     return total_cost

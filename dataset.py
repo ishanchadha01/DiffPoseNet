@@ -15,8 +15,8 @@ from utils import rot_to_euler, quaternion_to_euler, quaternion_difference
 class TartanAirDataset(Dataset):
     def __init__(self):
         super().__init__()
-        self.data_path = "/storage/home/hcoda1/3/ichadha3/scratch/data/abandonedfactory/Hard/abandonedfactory/Hard/P000/"
-        # self.data_path = "/Users/ishan/Documents/research/DiffPoseNet/small_data"
+        # self.data_path = "/storage/home/hcoda1/3/ichadha3/scratch/data/abandonedfactory/Hard/abandonedfactory/Hard/P000/"
+        self.data_path = "/Users/ishan/Documents/research/DiffPoseNet/small_data"
         self.img_path = os.path.join(self.data_path, 'image_left')
         self.flow_path = os.path.join(self.data_path, 'flow')
         self.pose_file = os.path.join(self.data_path, 'pose_left.txt')
